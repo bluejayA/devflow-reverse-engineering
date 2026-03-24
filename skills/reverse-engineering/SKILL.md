@@ -2,7 +2,7 @@
 name: reverse-engineering
 description: Use when understanding an existing codebase before modifying it, or documenting undocumented code structure and flows. Trigger on "코드베이스 분석", "코드 구조 파악", "이 코드 어떻게 동작해", "프로젝트 분석", "기존 코드 이해", "코드 읽어줘", "analyze codebase", "reverse engineer", "understand this code", "흐름 추적", "기술 부채 파악", "모듈 구조". Not for writing new code or debugging — use brainstorming or systematic-debugging instead.
 metadata:
-  version: 0.3.0
+  version: 0.4.0
   author: Jay
   category: analysis
   invoke_mode: user-invocable
@@ -54,6 +54,39 @@ metadata:
 
 ---
 
+## Sub-agent 전략
+
+Deep 모드에서 대상 코드베이스가 **대규모**(진입점 5개 이상 또는 모듈 10개 이상)일 때 sub-agent를 활용한다. Lite/Delta 모드에서는 사용하지 않는다.
+
+### 규모 판단 (Phase 1.1 완료 후)
+
+| 기준 | 소규모 | 대규모 |
+|------|--------|--------|
+| 진입점 수 | < 5 | >= 5 |
+| 모듈/패키지 수 | < 10 | >= 10 |
+| 판단 | 단일 에이전트 | sub-agent 디스패치 |
+
+> 둘 중 하나라도 대규모 기준을 충족하면 sub-agent를 사용한다.
+
+### 디스패치 지점
+
+| Phase | 병렬 단위 | 조건 |
+|-------|----------|------|
+| Phase 1.2~1.4 | 진입점 식별 / 의존성 그래프 / 데이터 모델 | Deep + 대규모 |
+| Phase 2.2 | 흐름 1개 = agent 1개 | Deep + 흐름 2개 이상 (규모 무관) |
+| Phase 3.1~3.4 | 패턴 / 부채 / 암묵적 ADR / 테스트 커버리지 | Deep + 대규모 |
+
+### Sub-agent 컨텍스트 규칙
+
+1. **입력 (Phase별)**:
+   - Phase 1 agent: 1.1 산출물 (기술 스택 + 매니페스트 요약)
+   - Phase 2 flow agent: Phase 1 전체 산출물 (구조 요약 + 진입점 + 모듈 그래프)
+   - Phase 3 agent: Phase 1~2 산출물 전체
+2. **범위 제한**: 각 sub-agent는 할당된 작업만 수행. 다른 Phase 영역을 탐색하지 않는다
+3. **출력 형식**: 각 sub-agent는 결과를 메인 에이전트에 반환. 메인 에이전트가 취합하여 산출물 생성
+
+---
+
 ## 프로세스
 
 ### Step 0: 모드 선택
@@ -71,13 +104,13 @@ d) Delta -- 기존 산출물 기반 증분 분석
 
 **모드별 실행 범위:**
 
-| Phase | Lite | Deep | Delta |
-|-------|:----:|:----:|:-----:|
-| Phase 1: 구조 추출 | 전체 | 전체 | 변경분만 |
-| Phase 2: 흐름 추적 | 진입점 3개 | 전체 | 변경분만 |
-| Phase 3: 패턴/부채 | 스킵 | 전체 | 변경분만 |
-| Phase 4: 검증 | 스킵 | 전체 | 변경분만 |
-| 산출물 | README + diagram | README + diagram + evidence | 기존 산출물 업데이트 |
+| Phase | Lite | Deep | Delta | Sub-agent (Deep) |
+|-------|:----:|:----:|:-----:|:----------------:|
+| Phase 1: 구조 추출 | 전체 | 전체 | 변경분만 | 1.1 단일 → 1.2~1.4 병렬 (대규모) |
+| Phase 2: 흐름 추적 | 진입점 3개 | 전체 | 변경분만 | 흐름 2개 이상일 때 흐름당 1 agent |
+| Phase 3: 패턴/부채 | 스킵 | 전체 | 변경분만 | 관점당 1 agent (대규모) |
+| Phase 4: 검증 | 스킵 | 전체 | 변경분만 | 단일 (전체 맥락 필요) |
+| 산출물 | README + diagram | README + diagram + evidence | 기존 산출물 업데이트 | — |
 
 > **DO NOT proceed to Phase 2 until Phase 1 is complete.** 구조를 모르고 흐름을 추적하면 누락이 발생한다.
 
@@ -93,6 +126,10 @@ d) Delta -- 기존 산출물 기반 증분 분석
 
 - `package.json`, `pyproject.toml`, `build.gradle.kts`, `Cargo.toml`, `go.mod` 등
 - 주요 의존성 분류: 프레임워크, DB, 외부 API, 테스트
+
+#### Sub-agent 분기점 (Deep + 대규모)
+
+1.1 완료 후 규모 판단 기준을 적용한다. 대규모이면 1.2, 1.3, 1.4를 각각 별도 sub-agent로 병렬 디스패치한다. 각 agent에게 1.1 산출물(기술 스택, 매니페스트 요약)을 컨텍스트로 전달한다. 소규모이면 단일 에이전트가 순차 실행한다.
 
 #### 1.2 진입점 식별
 
@@ -137,6 +174,12 @@ Phase 1의 진입점에서 출발하여 가장 중요한 흐름을 선택한다.
 - Lite: 최대 3개
 - Deep: 관심 영역 중심 + 주요 흐름 전체
 
+#### Sub-agent 분기점 (Deep)
+
+흐름 추적은 흐름 간 독립성이 보장되므로 코드베이스 규모와 무관하게 병렬화를 적용한다. 선택된 흐름이 2개 이상이면 각 흐름을 별도 sub-agent로 병렬 디스패치한다. 각 flow agent에게 Phase 1 전체 산출물(구조 요약 + 진입점 + 모듈 그래프)을 컨텍스트로 전달한다. 흐름이 1개이면 단일 에이전트가 실행한다.
+
+**Cross-cutting 취합**: 메인 에이전트가 모든 flow agent 결과를 받은 후 2.3 Cross-cutting Concerns를 종합한다.
+
 #### 2.2 Guided Depth-First Search
 
 각 흐름에 대해:
@@ -152,12 +195,18 @@ Phase 1의 진입점에서 출발하여 가장 중요한 흐름을 선택한다.
 
 대상: 에러 핸들링 패턴, 로깅/모니터링, 인증/인가, 트랜잭션 관리, 캐싱
 
+> Sub-agent 실행 시: 각 flow agent가 발견한 cross-cutting 항목을 메인 에이전트가 이 단계에서 취합한다. Phase 2 "Sub-agent 분기점"의 Cross-cutting 취합 규칙 참조.
+
 ---
 
 ### Phase 3: 패턴/부채 식별 (Pattern & Debt Identification)
 
 > Lite 모드에서는 스킵.
 > 자유도: **중**. 아래 관점을 참조하되, 코드베이스 특성에 따라 관점을 추가/생략할 수 있다.
+
+#### Sub-agent 분기점 (Deep + 대규모)
+
+Phase 1에서 판단한 규모 기준을 적용한다. 대규모이면 3.1~3.4를 각각 별도 sub-agent로 병렬 디스패치한다. 각 agent에게 Phase 1~2 산출물을 컨텍스트로 전달한다. 소규모이면 단일 에이전트가 순차 실행한다.
 
 #### 3.1 코딩 패턴/컨벤션
 
@@ -210,7 +259,7 @@ Phase 1의 진입점에서 출발하여 가장 중요한 흐름을 선택한다.
 
 ---
 
-### Step 5: 산출물 생성
+### Phase 5: 산출물 생성
 
 이 스킬 디렉토리의 `assets/output-template.md`를 로드하여 README.md를 채운다. Deep 모드에서는 `assets/evidence-template.md`를 로드하여 evidence.md도 생성한다.
 
@@ -277,7 +326,10 @@ reverse-engineering/
   - 진입점: PaymentController.processPayment(), webhook handler
   - 외부 의존: stripe SDK, 내부 의존: UserService, OrderService
 -> Phase 2: 흐름 추적
-  - 결제 흐름: Controller -> PaymentService.charge() -> Stripe API -> webhook callback
+  - 흐름 2개 선택 -> Sub-agent 분기: flow agent 2개 병렬 디스패치
+    - Flow Agent A: 결제 흐름 (Controller -> PaymentService.charge() -> Stripe API -> webhook callback)
+    - Flow Agent B: 환불 흐름 (RefundController -> Stripe API 직접 호출)
+  - 메인 에이전트: flow agent 결과 취합 + Cross-cutting 종합
   - 판단: webhook handler에서 idempotency key 미사용 발견 -> Phase 3 기술 부채 기록 예정
 -> Phase 3: 패턴/부채
   - 패턴: Repository 패턴 (PaymentRepository), Strategy 패턴 (PG사 어댑터)
