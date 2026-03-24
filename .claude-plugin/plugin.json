@@ -1,0 +1,6 @@
+{
+  "name": "reverse-engineering",
+  "version": "0.1.0",
+  "description": "Brownfield 코드베이스 구조/흐름/패턴 분석 플러그인 (4-Phase: 구조 추출, 흐름 추적, 패턴/부채 식별, 검증)",
+  "skills": "./skills"
+}
